@@ -35,7 +35,7 @@ def train(rank, a, h):
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
-    pqmf = PQMF(N=4, taps=62, cutoff=0.15, beta=9.0).cuda()
+    pqmf = PQMF(N=4, taps=62, cutoff=0.15, beta=9.0).to(device)
 
     if rank == 0:
         print(generator)
