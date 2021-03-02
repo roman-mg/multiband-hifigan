@@ -17,6 +17,9 @@ from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+from pqmf import PQMF
+from stft_loss import MultiResolutionSTFTLoss
+
 
 torch.backends.cudnn.benchmark = True
 
@@ -32,6 +35,7 @@ def train(rank, a, h):
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
+    pqmf = PQMF(N=4, taps=62, cutoff=0.15, beta=9.0).cuda()
 
     if rank == 0:
         print(generator)
@@ -102,6 +106,12 @@ def train(rank, a, h):
     generator.train()
     mpd.train()
     msd.train()
+
+    stft_loss = MultiResolutionSTFTLoss()
+    sub_stft_loss = MultiResolutionSTFTLoss(h.subband_stft_loss_params['fft_sizes'],
+                                            h.subband_stft_loss_params['hop_sizes'],
+                                            h.subband_stft_loss_params['win_lengths'])
+
     for epoch in range(max(0, last_epoch), a.training_epochs):
         if rank == 0:
             start = time.time()
@@ -120,6 +130,11 @@ def train(rank, a, h):
             y = y.unsqueeze(1)
 
             y_g_hat = generator(x)
+
+            if h.output_channel > 1:
+                y_mb_ = y_g_hat
+                y_g_hat = pqmf.synthesis(y_mb_)[:, :, :h.segment_size]
+
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
@@ -140,9 +155,23 @@ def train(rank, a, h):
 
             # Generator
             optim_g.zero_grad()
+            loss_g = 0
+            if h.use_stft:
+                sc_loss, mag_loss = stft_loss(y_g_hat[:, :, :y.size(2)].squeeze(1), y.squeeze(1))
+                loss_g += sc_loss + mag_loss  # STFT Loss
+
+            if h.use_subband_stft_loss:
+                loss_g *= 0.5  # for balancing with subband stft loss
+                y_mb = pqmf.analysis(y)
+                y_mb = y_mb.view(-1, y_mb.size(2))  # (B, C, T) -> (B x C, T)
+                y_mb_ = y_mb_.view(-1, y_mb_.size(2))  # (B, C, T) -> (B x C, T)
+                sub_sc_loss, sub_mag_loss = sub_stft_loss(y_mb_[:, :y_mb.size(-1)], y_mb)  # y_mb --> [B*C, T]
+                loss_g += 0.5 * (sub_sc_loss + sub_mag_loss)
 
             # L1 Mel-Spectrogram Loss
-            loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+            loss_mel = 0
+            if h.mel_loss:
+                loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
@@ -150,7 +179,7 @@ def train(rank, a, h):
             loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
-            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
+            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_g
 
             loss_gen_all.backward()
             optim_g.step()
@@ -192,11 +221,28 @@ def train(rank, a, h):
                         for j, batch in enumerate(validation_loader):
                             x, y, _, y_mel = batch
                             y_g_hat = generator(x.to(device))
+                            if h.output_channel > 1:
+                                y_mb_ = y_g_hat
+                                y_g_hat = pqmf.synthesis(y_mb_)
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
-                                                          h.hop_size, h.win_size,
-                                                          h.fmin, h.fmax_for_loss)
-                            val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
+
+                            if h.use_stft:
+                                sc_loss, mag_loss = stft_loss(y_g_hat[:, :, :y.size(2)].squeeze(1), y.squeeze(1))
+                                val_err_tot += sc_loss + mag_loss  # STFT Loss
+
+                            if h.use_subband_stft_loss:
+                                val_err_tot *= 0.5  # for balancing with subband stft loss
+                                y_mb = pqmf.analysis(y)
+                                y_mb = y_mb.view(-1, y_mb.size(2))  # (B, C, T) -> (B x C, T)
+                                y_mb_ = y_mb_.view(-1, y_mb_.size(2))  # (B, C, T) -> (B x C, T)
+                                sub_sc_loss, sub_mag_loss = sub_stft_loss(y_mb_[:, :y_mb.size(-1)],
+                                                                          y_mb)  # y_mb --> [B*C, T]
+                                val_err_tot += 0.5 * (sub_sc_loss + sub_mag_loss)
+                            if h.mel_loss:
+                                y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
+                                                              h.hop_size, h.win_size,
+                                                              h.fmin, h.fmax_for_loss)
+                                val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
                             if j <= 4:
                                 if steps == 0:

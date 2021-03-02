@@ -8,6 +8,7 @@
     "lr_decay": 0.999,
     "seed": 1234,
 
+    "output_channel": 1,
     "upsample_rates": [8,8,4],
     "upsample_kernel_sizes": [16,16,8],
     "upsample_initial_channel": 256,
