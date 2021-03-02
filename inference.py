@@ -9,6 +9,7 @@ from scipy.io.wavfile import write
 from env import AttrDict
 from meldataset import mel_spectrogram, MAX_WAV_VALUE, load_wav
 from models import Generator
+from pqmf import PQMF
 
 h = None
 device = None
@@ -63,6 +64,7 @@ def inference(a):
             output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0] + '_generated.wav')
             write(output_file, h.sampling_rate, audio)
             print(output_file)
+
 
 def main():
     print('Initializing Inference Process..')
