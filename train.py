@@ -199,7 +199,7 @@ def train(rank, a, h):
                     save_checkpoint(checkpoint_path,
                                     {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()})
                     checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path, 
+                    save_checkpoint(checkpoint_path,
                                     {'mpd': (mpd.module if h.num_gpus > 1
                                                          else mpd).state_dict(),
                                      'msd': (msd.module if h.num_gpus > 1
@@ -221,12 +221,14 @@ def train(rank, a, h):
                         for j, batch in enumerate(validation_loader):
                             x, y, _, y_mel = batch
                             y_g_hat = generator(x.to(device))
+                            y = y.unsqueeze(1).to(device)
                             if h.output_channel > 1:
                                 y_mb_ = y_g_hat
                                 y_g_hat = pqmf.synthesis(y_mb_)
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
 
                             if h.use_stft:
+                                #print(y_g_hat[:, :, 0:y.size(1)].shape , y.unsqueeze(1).shape)
                                 sc_loss, mag_loss = stft_loss(y_g_hat[:, :, :y.size(2)].squeeze(1), y.squeeze(1))
                                 val_err_tot += sc_loss + mag_loss  # STFT Loss
 
@@ -242,7 +244,8 @@ def train(rank, a, h):
                                 y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                               h.hop_size, h.win_size,
                                                               h.fmin, h.fmax_for_loss)
-                                val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
+                                #print(y_mel.shape, y_g_hat_mel.shape)
+                                val_err_tot += F.l1_loss(y_mel, y_g_hat_mel[:,:,:y_mel.size(2)]).item()
 
                             if j <= 4:
                                 if steps == 0:
@@ -265,7 +268,7 @@ def train(rank, a, h):
 
         scheduler_g.step()
         scheduler_d.step()
-        
+
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
 
