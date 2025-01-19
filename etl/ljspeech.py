@@ -5,9 +5,9 @@ from tqdm import tqdm
 
 
 def download(
-  output_folder: str,
-  url: str = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
-  ) -> None:
+        output_folder: str,
+        url: str = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
+) -> None:
     print("Downloading LJSpeech-1.1 ...")
     chunk_size = 8192
     archive_name = "LJSpeech-1.1.tar.bz2"
@@ -18,11 +18,11 @@ def download(
     file_size = int(response.headers.get('Content-Length', 0))
 
     with open(archive_path, "wb") as file, tqdm(
-        desc=archive_name,
-        total=file_size,
-        unit="B",
-        unit_scale=True,
-        unit_divisor=1024,
+            desc=archive_name,
+            total=file_size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
     ) as progress_bar:
         while True:
             chunk = response.read(chunk_size)
@@ -31,6 +31,7 @@ def download(
             file.write(chunk)
             progress_bar.update(len(chunk))
 
+    print("Extracting files ...")
     with tarfile.open(archive_path, "r:bz2") as tar:
         tar.extractall(path=output_folder)
 
