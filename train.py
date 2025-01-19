@@ -222,6 +222,12 @@ def train(rank, a, h):
                             x, y, _, y_mel = batch
                             y_g_hat = generator(x.to(device))
                             y = y.unsqueeze(1).to(device)
+
+                            # TODO: incorrect padding in `meldataset`. Review later. Currently cut off `y`.
+                            gen_len = y_g_hat.shape[1] * y_g_hat.shape[2]
+                            if gen_len < y.shape[2]:
+                                y = y[:, :, :gen_len]
+
                             if h.output_channel > 1:
                                 y_mb_ = y_g_hat
                                 y_g_hat = pqmf.synthesis(y_mb_)
@@ -284,7 +290,7 @@ def main():
     parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--config', default='config_v1.json')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
