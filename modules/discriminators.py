@@ -8,8 +8,8 @@ from torch.nn import AvgPool1d, Conv1d, Conv2d
 from torch.nn.utils import weight_norm, spectral_norm
 from torchaudio.transforms import Spectrogram, Resample
 
-from scripts.utils import AttrDict
-from generators import LRELU_SLOPE
+from scripts.env import AttrDict
+from modules.generators import LRELU_SLOPE
 from scripts.utils import get_padding
 
 
@@ -225,8 +225,7 @@ class DiscriminatorB(nn.Module):
 #   LICENSE is in incl_licenses directory.
 class MultiBandDiscriminator(nn.Module):
     def __init__(
-        self,
-        h,
+        self
     ):
         """
         Multi-band multi-scale STFT discriminator, with the architecture based on https://github.com/descriptinc/descript-audio-codec.
@@ -234,7 +233,7 @@ class MultiBandDiscriminator(nn.Module):
         """
         super().__init__()
         # fft_sizes (list[int]): Tuple of window lengths for FFT. Defaults to [2048, 1024, 512] if not set in h.
-        self.fft_sizes = h.get("mbd_fft_sizes", [2048, 1024, 512])
+        self.fft_sizes = [2048, 1024, 512]
         self.discriminators = nn.ModuleList(
             [DiscriminatorB(window_length=w) for w in self.fft_sizes]
         )
