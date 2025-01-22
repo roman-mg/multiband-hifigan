@@ -1,4 +1,5 @@
 import warnings
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
 import os
@@ -12,14 +13,13 @@ from torch.utils.data import DistributedSampler, DataLoader
 import torch.multiprocessing as mp
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
-from env import AttrDict, build_env
-from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
-from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
-    discriminator_loss
-from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
-from pqmf import PQMF
-from stft_loss import MultiResolutionSTFTLoss
-
+from modules.discriminators import MultiPeriodDiscriminator, MultiScaleDiscriminator, MultiBandDiscriminator
+from modules.generators import Generator
+from modules.losses import MultiResolutionSTFTLoss, feature_loss, generator_loss, discriminator_loss
+from scripts.env import AttrDict, build_env
+from scripts.meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
+from scripts.utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+from scripts.pqmf import PQMF
 
 torch.backends.cudnn.benchmark = True
 
@@ -35,6 +35,7 @@ def train(rank, a, h):
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
+    mbd = MultiBandDiscriminator().to(device)
     pqmf = PQMF(N=4, taps=62, cutoff=0.15, beta=9.0).to(device)
 
     if rank == 0:
@@ -56,6 +57,7 @@ def train(rank, a, h):
         generator.load_state_dict(state_dict_g['generator'])
         mpd.load_state_dict(state_dict_do['mpd'])
         msd.load_state_dict(state_dict_do['msd'])
+        mbd.load_state_dict(state_dict_do['mbd'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
 
@@ -63,9 +65,10 @@ def train(rank, a, h):
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
         mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
         msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
+        mbd = DistributedDataParallel(mbd, device_ids=[rank]).to(device)
 
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
-    optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
+    optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters(), mbd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
 
     if state_dict_do is not None:
@@ -106,6 +109,7 @@ def train(rank, a, h):
     generator.train()
     mpd.train()
     msd.train()
+    mbd.train()
 
     stft_loss = MultiResolutionSTFTLoss()
     sub_stft_loss = MultiResolutionSTFTLoss(h.subband_stft_loss_params['fft_sizes'],
@@ -115,7 +119,7 @@ def train(rank, a, h):
     for epoch in range(max(0, last_epoch), a.training_epochs):
         if rank == 0:
             start = time.time()
-            print("Epoch: {}".format(epoch+1))
+            print("Epoch: {}".format(epoch + 1))
 
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
@@ -135,7 +139,8 @@ def train(rank, a, h):
                 y_mb_ = y_g_hat
                 y_g_hat = pqmf.synthesis(y_mb_)[:, :, :h.segment_size]
 
-            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
+            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size,
+                                          h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
             optim_d.zero_grad()
@@ -148,7 +153,11 @@ def train(rank, a, h):
             y_ds_hat_r, y_ds_hat_g, _, _ = msd(y, y_g_hat.detach())
             loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
 
-            loss_disc_all = loss_disc_s + loss_disc_f
+            # MBD
+            y_db_hat_r, y_db_hat_g, _, _ = mbd(y, y_g_hat.detach())
+            loss_disc_b, losses_disc_b_r, losses_disc_b_g = discriminator_loss(y_db_hat_r, y_db_hat_g)
+
+            loss_disc_all = loss_disc_s + loss_disc_f + loss_disc_b
 
             loss_disc_all.backward()
             optim_d.step()
@@ -201,9 +210,11 @@ def train(rank, a, h):
                     checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
                     save_checkpoint(checkpoint_path,
                                     {'mpd': (mpd.module if h.num_gpus > 1
-                                                         else mpd).state_dict(),
+                                             else mpd).state_dict(),
                                      'msd': (msd.module if h.num_gpus > 1
-                                                         else msd).state_dict(),
+                                             else msd).state_dict(),
+                                     'mbd': (mbd.module if h.num_gpus > 1
+                                             else mbd).state_dict(),
                                      'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
                                      'epoch': epoch})
 
@@ -234,7 +245,7 @@ def train(rank, a, h):
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
 
                             if h.use_stft:
-                                #print(y_g_hat[:, :, 0:y.size(1)].shape , y.unsqueeze(1).shape)
+                                # print(y_g_hat[:, :, 0:y.size(1)].shape , y.unsqueeze(1).shape)
                                 sc_loss, mag_loss = stft_loss(y_g_hat[:, :, :y.size(2)].squeeze(1), y.squeeze(1))
                                 val_err_tot += sc_loss + mag_loss  # STFT Loss
 
@@ -250,8 +261,8 @@ def train(rank, a, h):
                                 y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
                                                               h.hop_size, h.win_size,
                                                               h.fmin, h.fmax_for_loss)
-                                #print(y_mel.shape, y_g_hat_mel.shape)
-                                val_err_tot += F.l1_loss(y_mel, y_g_hat_mel[:,:,:y_mel.size(2)]).item()
+                                # print(y_mel.shape, y_g_hat_mel.shape)
+                                val_err_tot += F.l1_loss(y_mel, y_g_hat_mel[:, :, :y_mel.size(2)]).item()
 
                             if j <= 4:
                                 if steps == 0:
@@ -265,7 +276,7 @@ def train(rank, a, h):
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
                                               plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
 
-                        val_err = val_err_tot / (j+1)
+                        val_err = val_err_tot / (j + 1)
                         sw.add_scalar("validation/mel_spec_error", val_err, steps)
 
                     generator.train()
@@ -290,7 +301,7 @@ def main():
     parser.add_argument('--input_training_file', default='datasets/LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='datasets/LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='/content/drive/MyDrive/cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--config', default='configs/config_v1.json')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=1000, type=int)

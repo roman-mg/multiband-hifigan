@@ -6,10 +6,10 @@ import argparse
 import json
 import torch
 from scipy.io.wavfile import write
-from env import AttrDict
-from meldataset import mel_spectrogram, MAX_WAV_VALUE, load_wav
-from models import Generator
-from pqmf import PQMF
+from scripts.env import AttrDict
+from scripts.meldataset import mel_spectrogram, MAX_WAV_VALUE, load_wav
+from modules.generators import Generator
+from scripts.pqmf import PQMF
 
 h = None
 device = None
