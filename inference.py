@@ -70,9 +70,9 @@ def main():
     print('Initializing Inference Process..')
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_wavs_dir', default='test_files')
-    parser.add_argument('--output_dir', default='generated_files')
-    parser.add_argument('--checkpoint_file', required=True)
+    parser.add_argument('--input_wavs_dir', default='./datasets/test_files')
+    parser.add_argument('--output_dir', default='./datasets/generated_files')
+    parser.add_argument('--checkpoint_file', default="./cp_hifigan/g_00011000.zip")
     a = parser.parse_args()
 
     config_file = os.path.join(os.path.split(a.checkpoint_file)[0], 'config.json')
@@ -96,4 +96,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
